@@ -1,0 +1,49 @@
+import { useEffect, useState } from "react";
+import { apiGet } from "../api";
+import PageHeader from "../components/PageHeader";
+import StatePanel from "../components/StatePanel";
+
+const countLabels = ["eligible", "candidate", "unresolved", "excluded"];
+const pretty = (value) => String(value || "unknown").replaceAll("_", " ");
+function Metric({ label, value, tone }) { return <article className={`validation-metric ${tone || ""}`}><span>{label}</span><strong>{value ?? "—"}</strong></article>; }
+
+export default function HistoricalValidationPage() {
+  const [report, setReport] = useState(null);
+  const [state, setState] = useState("loading");
+  const [error, setError] = useState("");
+  const [refresh, setRefresh] = useState(0);
+  useEffect(() => {
+    let active = true;
+    apiGet("/validation/historical-events").then((data) => { if (active) { setReport(data); setState("loaded"); setError(""); } })
+      .catch((cause) => { if (active) { setError(cause.message); setState("error"); } });
+    return () => { active = false; };
+  }, [refresh]);
+
+  const quality = report?.data_quality;
+  return <div className="page-stack">
+    <PageHeader eyebrow="HISTORICAL EVIDENCE" title="Historical validation" description="Audited official event records, station linkage, time-aware eligibility, data quality, and the evidence needed before predictive evaluation." action={<button className="musiri-refresh" type="button" onClick={() => { setState("loading"); setRefresh((value) => value + 1); }} disabled={state === "loading"}>{state === "loading" ? "Loading report…" : "↻ Refresh report"}</button>} />
+    {state === "loading" && <StatePanel kind="loading" title="Loading historical validation report" detail="Reading the backend's reproducible event-linkage audit." />}
+    {state === "error" && <StatePanel kind="error" title="Validation report unavailable" detail={`${error}. No substitute or mock report is shown.`} action={<button className="text-button" onClick={() => { setState("loading"); setRefresh((value) => value + 1); }}>Retry</button>} />}
+    {report && <>
+      <section className="validation-summary-grid">
+        <Metric label="Events reviewed" value={report.events_examined} />
+        <Metric label="Verified links" value={report.verified_links} tone="metric-good" />
+        <Metric label="Unresolved links" value={report.unresolved_links} tone="metric-warn" />
+        <Metric label="Excluded links" value={report.excluded_links} />
+        <Metric label="Historical stations" value={report.stations_examined} />
+        <Metric label="Pair-level candidates" value={report.candidate_event_station_pairs} />
+      </section>
+      <section className="panel validation-panel"><div className="panel-heading"><div><h2>Evaluation eligibility</h2><p>Every pair retains its status, explanation, and event/station source references.</p></div><span className="assessment-badge unassessed">{report.evaluation?.status || "blocked"}</span></div><div className="eligibility-counts">{countLabels.map((key) => <div key={key}><span>{key}</span><strong>{report.validation_eligibility_counts?.[key] ?? 0}</strong></div>)}</div><div className="evaluation-blocker"><strong>{report.evaluation?.statistically_defensible ? "Evaluation supported" : "Metrics unavailable · evaluation not run"}</strong><p>{report.evaluation?.reason || "No evaluation summary was supplied."}</p>{report.evaluation?.metrics == null && <p>No predictive metrics are reported.</p>}</div></section>
+      <section className="panel validation-panel"><div className="panel-heading"><div><h2>Official event records reviewed</h2><p>Gauge threshold intervals are not treated as flood-impact labels.</p></div><span className="map-tag">Verified flood events: {report.verified_flood_event_count ?? 0}</span></div>
+        {(report.event_classifications || []).map((event) => <article className="event-record" key={event.event_id}><div className="event-record-top"><div><strong>{event.station} · above {event.threshold_type} threshold</strong><small>{event.event_id}</small></div><span className="network-status status-candidate_match">{pretty(event.classification)}</span></div><div className="event-facts"><span><b>Period</b>{event.start} – {event.end}</span><span><b>Threshold</b>{event.threshold_value} {event.threshold_unit}</span><span><b>Time basis</b>{event.time_basis || "Unknown"}</span><span><b>Impact label</b>{event.impact_label_status || "Unavailable"}</span></div><div className="source-links">{event.source_url && <a href={event.source_url} target="_blank" rel="noreferrer">Official event source</a>}{event.location_source_url && <a href={event.location_source_url} target="_blank" rel="noreferrer">Station metadata source</a>}</div></article>)}
+      </section>
+      {quality && <section className="panel validation-panel"><div className="panel-heading"><div><h2>Historical telemetry quality and station coverage</h2><p>{quality.source_record_count?.toLocaleString()} raw rows · {quality.stations?.length || 0} station names · levels declared in {quality.declared_unit || "unknown units"}</p></div><span className="health-pill health-stale">{quality.source_timezone_status}</span></div>
+        <div className="quality-summary-grid"><div><b>Timestamped stale for current monitoring</b><span>{(quality.stations || []).reduce((sum, item) => sum + (item.stale_for_current_monitoring_count_conservative || 0), 0).toLocaleString()}</span></div><div><b>Official site-code field</b><span>{quality.official_station_code_field_present ? "Present" : "Absent"}</span></div><div><b>Telemetry unit field</b><span>{quality.stations?.[0]?.unit_evidence?.per_record_unit_field_present ? "Present" : "No per-record unit"}</span></div><div><b>Cross-station datum</b><span>Unresolved</span></div></div>
+        <div className="network-table-wrap"><table className="network-table validation-table"><thead><tr><th>Station</th><th>Valid / invalid / missing</th><th>Duplicate groups</th><th>Irregular intervals</th><th>Warning-window valid readings</th><th>Danger-window valid readings</th><th>Metadata</th></tr></thead><tbody>{(quality.stations || []).map((station) => { const windows = Object.values(station.event_window_coverage || {}); const warning = windows.find((item) => item.expected_calendar_clock_slots === 152); const danger = windows.find((item) => item.expected_calendar_clock_slots === 64); return <tr key={station.station_source_name}><td><b>{station.station_source_name}</b><small>{station.coverage_start_original || "—"} – {station.coverage_end_original || "—"}</small></td><td>{station.valid_numeric_observation_count?.toLocaleString()} / {station.invalid_observation_count} / {station.missing_observation_count}</td><td>{station.duplicate_timestamp_group_count} groups · {station.conflicting_duplicate_value_group_count} conflicts</td><td>{station.irregular_interval_count_vs_expected_cadence?.toLocaleString()} · expected hourly</td><td>{warning?.valid_observation_count ?? 0}/{warning?.expected_calendar_clock_slots ?? 152}</td><td>{danger?.valid_observation_count ?? 0}/{danger?.expected_calendar_clock_slots ?? 64}</td><td>{station.station_metadata?.metadata_conflict ? `Conflict: ${[...(station.station_metadata.river_values || []), ...(station.station_metadata.local_river_values || [])].join(", ")}` : "No reported conflict"}</td></tr>; })}</tbody></table></div>
+        <p className="safety-note">Event-window counts use valid readings within naive calendar-clock intervals. Telemetry and event timezones are undocumented, so these counts are not verified temporal coverage or evidence of flooding at another location.</p>
+      </section>}
+      <section className="panel validation-panel"><div className="panel-heading"><div><h2>Event–station pair explanations</h2><p>{report.pairs?.length || 0} evaluated pairs · straight-line distance is descriptive only</p></div></div><div className="pair-list">{(report.pairs || []).map((pair, index) => <details className="pair-record" key={`${pair.event_id}-${pair.station_id}-${index}`}><summary><span>{pair.event_id}</span><b>{pair.station_id}</b><em>{pretty(pair.validation_eligibility?.status)}</em></summary><div className="pair-details"><p><b>Decision:</b> {(pair.validation_eligibility?.reasons || []).join(" ") || "All required evidence was present."}</p><p><b>Calendar-clock rows:</b> {pair.temporal_evidence?.calendar_interval_observation_count ?? 0} · <b>Timezone:</b> {pair.temporal_evidence?.timezone_verified ? "verified" : "unknown"} · <b>Distance:</b> {pair.geographic_evidence?.straight_line_distance_km == null ? "unavailable" : `${pair.geographic_evidence.straight_line_distance_km} km (proximity only)`}</p><p><b>Hydrology:</b> {pair.hydrological_relationship?.reason || "No verified connection."}</p><p><b>Missing / conflict evidence:</b> {pair.geographic_evidence?.station_metadata_conflict ? "Station metadata conflict; " : ""}{(pair.validation_eligibility?.reasons || []).join("; ") || "None reported"}</p><div className="source-links">{pair.event_source && <a href={pair.event_source} target="_blank" rel="noreferrer">Event source</a>}{pair.station_source?.startsWith("http") && <a href={pair.station_source} target="_blank" rel="noreferrer">Station source</a>}</div></div></details>)}</div></section>
+      <section className="panel validation-panel"><div className="panel-heading"><div><h2>Predictive-evaluation blockers</h2><p>Current evidence does not support a baseline evaluation.</p></div><span className="assessment-badge unassessed">Not run</span></div><ul className="evidence-list">{(report.backtesting?.missing_evidence || report.next_actions || []).map((item) => <li key={item}>{item}</li>)}</ul><p className="safety-note">Flood risk remains {report.risk_status || "not_assessed"}. Unlabeled periods are not treated as negative events.</p></section>
+    </>}
+  </div>;
+}
